@@ -1,0 +1,54 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Prepare Release Keystore
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.jks
+          else
+            keytool -genkeypair -v -keystore release.jks -alias tbrkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass tbrpro123 -keypass tbrpro123 \
+              -dname "CN=tbrPRO,O=tbr,C=RU"
+          fi
+
+      - name: Build Signed Release APK
+        env:
+          SIGNING_STORE_FILE: ${{ github.workspace }}/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD || 'tbrpro123' }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS || 'tbrkey' }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD || 'tbrpro123' }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk tbr-widget-${{ github.ref_name }}.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tbr-widget-${{ github.ref_name }}.apk
+          generate_release_notes: true
