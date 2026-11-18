@@ -111,21 +111,18 @@ class TbrWidgetProvider : AppWidgetProvider() {
                     views.setTextViewText(R.id.tv_footer, "⚠️ $errorMsg ($nowStr)")
                 }
 
-                // Кнопка ↻ принудительного обновления
                 val refIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_REFRESH }
                 views.setOnClickPendingIntent(
                     R.id.btn_refresh,
                     PendingIntent.getBroadcast(ctx, 101, refIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 )
 
-                // Кнопка переключения графиков
                 val toggleIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_TOGGLE_CHART }
                 views.setOnClickPendingIntent(
                     R.id.btn_chart_toggle,
                     PendingIntent.getBroadcast(ctx, 103, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 )
 
-                // Отдельная кнопка 🌐 для открытия веб-интерфейса
                 val url = Prefs.getUrl(ctx)
                 val webIntent = if (url.isNotBlank()) Intent(Intent.ACTION_VIEW, Uri.parse(url)) else Intent(ctx, MainActivity::class.java)
                 views.setOnClickPendingIntent(
@@ -133,7 +130,6 @@ class TbrWidgetProvider : AppWidgetProvider() {
                     PendingIntent.getActivity(ctx, 104, webIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 )
 
-                // Тап по корню больше не открывает браузер (только экран настроек)
                 val cfgIntent = Intent(ctx, MainActivity::class.java)
                 views.setOnClickPendingIntent(
                     R.id.widget_root,
