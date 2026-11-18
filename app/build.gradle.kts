@@ -11,8 +11,8 @@ android {
         applicationId = "com.tbrpro.widget"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.2.0"
     }
 
     signingConfigs {
@@ -56,4 +56,5 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

@@ -22,6 +22,36 @@ data class WidgetData(
 )
 
 object ApiClient {
+    fun exchangeLoginPassword(baseUrl: String, login: String, pass: String): Result<String> {
+        return try {
+            val conn = (URL("$baseUrl/api/auth/exchange").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val body = JSONObject().apply {
+                put("login", login)
+                put("password", pass)
+            }.toString().toByteArray(Charsets.UTF_8)
+
+            conn.outputStream.use { it.write(body) }
+            val code = conn.responseCode
+            val respStr = (if (code in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val obj = JSONObject(respStr)
+            if (obj.optBoolean("success", false)) {
+                Result.success(obj.getString("api_token"))
+            } else {
+                Result.failure(IllegalStateException(obj.optString("error", "HTTP $code")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun fetchWidgetJson(baseUrl: String, token: String): Result<String> {
         return try {
             val conn = (URL("$baseUrl/api/widget").openConnection() as HttpURLConnection).apply {

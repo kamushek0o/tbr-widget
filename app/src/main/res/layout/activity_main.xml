@@ -22,10 +22,20 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:layout_marginBottom="18dp"
-            android:text="Укажите адрес сервера (LAN / NetBird) и Viewer-токен из настроек профилей."
+            android:layout_marginBottom="16dp"
+            android:text="Отсканируйте QR из настроек веб-интерфейса или введите параметры вручную:"
             android:textColor="#95A5A6"
             android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btn_scan_qr"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginBottom="18dp"
+            android:backgroundTint="#262630"
+            android:text="📷 Отсканировать QR-код"
+            android:textColor="#2ECC71"
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -40,9 +50,9 @@
             android:layout_width="match_parent"
             android:layout_height="46dp"
             android:layout_marginTop="4dp"
-            android:layout_marginBottom="14dp"
+            android:layout_marginBottom="12dp"
             android:background="#262630"
-            android:hint="http://192.168.1.50:5000"
+            android:hint="https://wowaplus.duckdns.org или http://100.x:5000"
             android:inputType="textUri"
             android:paddingHorizontal="12dp"
             android:textColor="#FFFFFF"
@@ -52,7 +62,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Viewer / Admin токен:"
+            android:text="API-токен (tbr_api_...):"
             android:textColor="#FFFFFF"
             android:textSize="12sp"
             android:textStyle="bold" />
@@ -62,14 +72,65 @@
             android:layout_width="match_parent"
             android:layout_height="46dp"
             android:layout_marginTop="4dp"
-            android:layout_marginBottom="14dp"
+            android:layout_marginBottom="12dp"
             android:background="#262630"
-            android:hint="tbr_..."
+            android:hint="tbr_api_..."
             android:inputType="textPassword"
             android:paddingHorizontal="12dp"
             android:textColor="#FFFFFF"
             android:textColorHint="#6B7280"
             android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Или вход по логину и паролю:"
+            android:textColor="#95A5A6"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="12dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/et_login"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="#262630"
+                android:hint="Логин"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#6B7280"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/et_password"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="#262630"
+                android:hint="Пароль"
+                android:inputType="textPassword"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#6B7280"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_exchange"
+                android:layout_width="wrap_content"
+                android:layout_height="46dp"
+                android:backgroundTint="#262630"
+                android:text="Войти"
+                android:textColor="#2ECC71"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"

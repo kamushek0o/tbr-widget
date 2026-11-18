@@ -34,6 +34,17 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/btn_open_web"
+            android:layout_width="26dp"
+            android:layout_height="24dp"
+            android:layout_marginEnd="4dp"
+            android:background="#262630"
+            android:gravity="center"
+            android:text="🌐"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp" />
+
+        <TextView
             android:id="@+id/btn_chart_toggle"
             android:layout_width="34dp"
             android:layout_height="24dp"
@@ -47,13 +58,13 @@
 
         <TextView
             android:id="@+id/btn_refresh"
-            android:layout_width="28dp"
+            android:layout_width="26dp"
             android:layout_height="24dp"
             android:background="#262630"
             android:gravity="center"
             android:text="↻"
             android:textColor="#FFFFFF"
-            android:textSize="14sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
     </LinearLayout>
 
