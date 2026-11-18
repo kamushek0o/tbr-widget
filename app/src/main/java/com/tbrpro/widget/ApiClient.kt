@@ -1,77 +1,95 @@
 package com.tbrpro.widget
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class WidgetPayload(
+data class SpeedPt(val label: String, val speedMbs: Float)
+data class BarPt(val label: String, val gb: Float)
+
+data class WidgetData(
     val qbRunning: Boolean,
     val activeTorrents: Int,
     val totalTorrents: Int,
     val speedFmt: String,
     val up24hFmt: String,
     val diskFreeFmt: String,
-    val chart: Bitmap?
+    val speedSeries: List<SpeedPt>,
+    val dailySeries: List<BarPt>,
+    val topSeries: List<BarPt>
 )
 
 object ApiClient {
-    fun fetchWidgetData(baseUrl: String, token: String, chartType: String = "speed"): Result<WidgetPayload> {
+    fun fetchWidgetJson(baseUrl: String, token: String): Result<String> {
         return try {
-            val jsonStr = httpGetText("$baseUrl/api/widget", token)
-            val obj = JSONObject(jsonStr)
-            val bmp = try {
-                httpGetBitmap("$baseUrl/api/widget/chart.png?type=$chartType&hours=24&w=600&h=200", token)
-            } catch (_: Exception) {
-                null
+            val conn = (URL("$baseUrl/api/widget").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                if (token.isNotBlank()) setRequestProperty("Authorization", "Bearer $token")
             }
-            Result.success(
-                WidgetPayload(
-                    qbRunning = obj.optBoolean("qb_running", false),
-                    activeTorrents = obj.optInt("active_torrents", 0),
-                    totalTorrents = obj.optInt("total_torrents", 0),
-                    speedFmt = obj.optString("current_speed_fmt", "0 B/s"),
-                    up24hFmt = obj.optString("uploaded_24h_fmt", "0 B"),
-                    diskFreeFmt = obj.optString("disk_free_fmt", "0 B"),
-                    chart = bmp
-                )
-            )
+            try {
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    throw IllegalStateException("HTTP $code")
+                }
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                JSONObject(text)
+                Result.success(text)
+            } finally {
+                conn.disconnect()
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    private fun openConn(urlStr: String, token: String): HttpURLConnection {
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 8000
-            readTimeout = 8000
-            if (token.isNotBlank()) setRequestProperty("Authorization", "Bearer $token")
-        }
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            conn.disconnect()
-            throw IllegalStateException("HTTP $code")
-        }
-        return conn
-    }
-
-    private fun httpGetText(urlStr: String, token: String): String {
-        val conn = openConn(urlStr, token)
+    fun parseWidgetJson(rawJson: String?): WidgetData? {
+        if (rawJson.isNullOrBlank()) return null
         return try {
-            conn.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            conn.disconnect()
-        }
-    }
+            val obj = JSONObject(rawJson)
+            val charts = obj.optJSONObject("charts")
 
-    private fun httpGetBitmap(urlStr: String, token: String): Bitmap? {
-        val conn = openConn(urlStr, token)
-        return try {
-            conn.inputStream.use { BitmapFactory.decodeStream(it) }
-        } finally {
-            conn.disconnect()
+            val speeds = mutableListOf<SpeedPt>()
+            val spArr = charts?.optJSONArray("speed_24h")
+            if (spArr != null) {
+                for (i in 0 until spArr.length()) {
+                    val item = spArr.optJSONObject(i) ?: continue
+                    speeds.add(SpeedPt(item.optString("label", ""), item.optDouble("speed_mbs", 0.0).toFloat()))
+                }
+            }
+
+            val dailies = mutableListOf<BarPt>()
+            val dlArr = charts?.optJSONArray("daily_7d")
+            if (dlArr != null) {
+                for (i in 0 until dlArr.length()) {
+                    val item = dlArr.optJSONObject(i) ?: continue
+                    dailies.add(BarPt(item.optString("label", ""), item.optDouble("gb", 0.0).toFloat()))
+                }
+            }
+
+            val tops = mutableListOf<BarPt>()
+            val topArr = charts?.optJSONArray("top_5")
+            if (topArr != null) {
+                for (i in 0 until topArr.length()) {
+                    val item = topArr.optJSONObject(i) ?: continue
+                    tops.add(BarPt(item.optString("name", ""), item.optDouble("gb", 0.0).toFloat()))
+                }
+            }
+
+            WidgetData(
+                qbRunning = obj.optBoolean("qb_running", false),
+                activeTorrents = obj.optInt("active_torrents", 0),
+                totalTorrents = obj.optInt("total_torrents", 0),
+                speedFmt = obj.optString("current_speed_fmt", "0 B/s"),
+                up24hFmt = obj.optString("uploaded_24h_fmt", "0 B"),
+                diskFreeFmt = obj.optString("disk_free_fmt", "0 B"),
+                speedSeries = speeds,
+                dailySeries = dailies,
+                topSeries = tops
+            )
+        } catch (_: Exception) {
+            null
         }
     }
 }

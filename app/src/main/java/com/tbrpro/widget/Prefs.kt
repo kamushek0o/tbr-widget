@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import java.io.File
 
 object Prefs {
     private const val FILE_NAME = "tbr_widget_secure"
+    private const val CACHE_FILE = "widget_data.json"
 
     private fun getPrefs(ctx: Context): SharedPreferences {
         return try {
@@ -36,8 +38,24 @@ object Prefs {
     fun getToken(ctx: Context): String = getPrefs(ctx).getString("token", "") ?: ""
     fun getIntervalMin(ctx: Context): Long = getPrefs(ctx).getLong("interval_min", 30L)
 
-    fun getChartType(ctx: Context): String = getPrefs(ctx).getString("chart_type", "speed") ?: "speed"
-    fun setChartType(ctx: Context, type: String) {
-        getPrefs(ctx).edit().putString("chart_type", type).apply()
+    fun getChartMode(ctx: Context): String = getPrefs(ctx).getString("chart_mode", "1") ?: "1"
+    fun setChartMode(ctx: Context, mode: String) {
+        getPrefs(ctx).edit().putString("chart_mode", mode).apply()
+    }
+
+    fun saveCachedJson(ctx: Context, rawJson: String) {
+        try {
+            File(ctx.cacheDir, CACHE_FILE).writeText(rawJson, Charsets.UTF_8)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun loadCachedJson(ctx: Context): String? {
+        return try {
+            val f = File(ctx.cacheDir, CACHE_FILE)
+            if (f.exists()) f.readText(Charsets.UTF_8) else null
+        } catch (_: Exception) {
+            null
+        }
     }
 }

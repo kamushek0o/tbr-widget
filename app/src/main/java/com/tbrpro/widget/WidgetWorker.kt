@@ -17,12 +17,12 @@ class WidgetWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params)
         val token = Prefs.getToken(applicationContext)
         if (url.isBlank()) return Result.success()
 
-        val chartType = Prefs.getChartType(applicationContext)
-        val res = ApiClient.fetchWidgetData(url, token, chartType)
-        res.onSuccess { payload ->
-            TbrWidgetProvider.updateAllWidgets(applicationContext, payload, null)
+        val res = ApiClient.fetchWidgetJson(url, token)
+        res.onSuccess { rawJson ->
+            Prefs.saveCachedJson(applicationContext, rawJson)
+            TbrWidgetProvider.renderFromCache(applicationContext, null)
         }.onFailure { err ->
-            TbrWidgetProvider.updateAllWidgets(applicationContext, null, err.message ?: "Ошибка сети")
+            TbrWidgetProvider.renderFromCache(applicationContext, err.message ?: "Ошибка сети")
         }
         return Result.success()
     }

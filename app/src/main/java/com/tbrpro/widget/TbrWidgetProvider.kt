@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.view.View
 import android.widget.RemoteViews
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -16,6 +17,7 @@ import java.util.Locale
 class TbrWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(ctx: Context, mgr: AppWidgetManager, ids: IntArray) {
+        renderFromCache(ctx, null)
         WidgetWorker.runNow(ctx)
     }
 
@@ -24,10 +26,14 @@ class TbrWidgetProvider : AppWidgetProvider() {
         when (intent.action) {
             ACTION_REFRESH -> WidgetWorker.runNow(ctx)
             ACTION_TOGGLE_CHART -> {
-                val cur = Prefs.getChartType(ctx)
-                val next = if (cur == "speed") "daily" else "speed"
-                Prefs.setChartType(ctx, next)
-                WidgetWorker.runNow(ctx)
+                val nextMode = when (Prefs.getChartMode(ctx)) {
+                    "1" -> "2"
+                    "2" -> "3"
+                    "3" -> "all"
+                    else -> "1"
+                }
+                Prefs.setChartMode(ctx, nextMode)
+                renderFromCache(ctx, null) // Мгновенно из кэша без сети!
             }
         }
     }
@@ -36,13 +42,23 @@ class TbrWidgetProvider : AppWidgetProvider() {
         const val ACTION_REFRESH = "com.tbrpro.widget.ACTION_REFRESH"
         const val ACTION_TOGGLE_CHART = "com.tbrpro.widget.ACTION_TOGGLE_CHART"
 
-        fun updateAllWidgets(ctx: Context, data: WidgetPayload?, errorMsg: String?) {
+        fun renderFromCache(ctx: Context, errorMsg: String?) {
             val mgr = AppWidgetManager.getInstance(ctx)
             val ids = mgr.getAppWidgetIds(ComponentName(ctx, TbrWidgetProvider::class.java))
             if (ids.isEmpty()) return
 
+            val data = ApiClient.parseWidgetJson(Prefs.loadCachedJson(ctx))
+            val mode = Prefs.getChartMode(ctx)
             val views = RemoteViews(ctx.packageName, R.layout.widget_tbr)
             val nowStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+            val modeBadge = when (mode) {
+                "1" -> "1/3"
+                "2" -> "2/3"
+                "3" -> "3/3"
+                else -> "Все"
+            }
+            views.setTextViewText(R.id.btn_chart_toggle, modeBadge)
 
             if (data != null) {
                 views.setTextViewText(R.id.tv_qb_badge, if (data.qbRunning) "● qB OK" else "● qB OFF")
@@ -50,31 +66,58 @@ class TbrWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.tv_speed, data.speedFmt)
                 views.setTextViewText(R.id.tv_24h, data.up24hFmt)
                 views.setTextViewText(R.id.tv_disk, data.diskFreeFmt)
-                if (data.chart != null) {
-                    views.setImageViewBitmap(R.id.iv_chart, data.chart)
+
+                when (mode) {
+                    "1" -> {
+                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, 540, 200))
+                        views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                        views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                        views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                    }
+                    "2" -> {
+                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderDaily(data.dailySeries, 540, 200))
+                        views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                        views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                        views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                    }
+                    "3" -> {
+                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderTop(data.topSeries, 540, 200))
+                        views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                        views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                        views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                    }
+                    else -> {
+                        // Все 3 графика: 500x125 RGB_565 (~122 KB каждый -> ~366 KB суммарно < 500 KB)
+                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, 500, 125))
+                        views.setImageViewBitmap(R.id.iv_chart_2, WidgetChartRenderer.renderDaily(data.dailySeries, 500, 125))
+                        views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, 500, 140))
+                        views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                        views.setViewVisibility(R.id.iv_chart_2, View.VISIBLE)
+                        views.setViewVisibility(R.id.iv_chart_3, View.VISIBLE)
+                    }
                 }
-                views.setTextViewText(R.id.tv_footer, "Раздач: ${data.activeTorrents}/${data.totalTorrents} • $nowStr")
+
+                val statusTxt = if (!errorMsg.isNullOrBlank()) "⚠️ $errorMsg • $nowStr" else "Раздач: ${data.activeTorrents}/${data.totalTorrents} • $nowStr"
+                views.setTextViewText(R.id.tv_footer, statusTxt)
             } else if (!errorMsg.isNullOrBlank()) {
                 views.setTextViewText(R.id.tv_footer, "⚠️ $errorMsg ($nowStr)")
             }
 
-            // Кнопка ↻ принудительного обновления
+            // Уникальный requestCode для каждого PendingIntent
             val refIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_REFRESH }
             val refPi = PendingIntent.getBroadcast(
-                ctx, 1, refIntent,
+                ctx, 101, refIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             views.setOnClickPendingIntent(R.id.btn_refresh, refPi)
 
-            // Кнопка 📊 переключения графиков
             val toggleIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_TOGGLE_CHART }
             val togglePi = PendingIntent.getBroadcast(
-                ctx, 3, toggleIntent,
+                ctx, 103, toggleIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             views.setOnClickPendingIntent(R.id.btn_chart_toggle, togglePi)
 
-            // Тап по телу виджета открывает PWA/веб-дашборд
             val url = Prefs.getUrl(ctx)
             val tapIntent = if (url.isNotBlank()) {
                 Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -82,7 +125,7 @@ class TbrWidgetProvider : AppWidgetProvider() {
                 Intent(ctx, MainActivity::class.java)
             }
             val tapPi = PendingIntent.getActivity(
-                ctx, 2, tapIntent,
+                ctx, 102, tapIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             views.setOnClickPendingIntent(R.id.widget_root, tapPi)

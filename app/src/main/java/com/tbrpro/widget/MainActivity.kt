@@ -47,14 +47,18 @@ class MainActivity : AppCompatActivity() {
             tvStatus.text = "⏳ Проверка подключения к $url..."
 
             thread {
-                val res = ApiClient.fetchWidgetData(url, token)
+                val res = ApiClient.fetchWidgetJson(url, token)
                 runOnUiThread {
                     btnSave.isEnabled = true
-                    res.onSuccess { payload ->
+                    res.onSuccess { rawJson ->
+                        val payload = ApiClient.parseWidgetJson(rawJson)
                         Prefs.saveConfig(this, url, token, interval)
+                        Prefs.saveCachedJson(this, rawJson)
                         WidgetWorker.schedulePeriodic(this, interval)
-                        TbrWidgetProvider.updateAllWidgets(this, payload, null)
-                        tvStatus.text = "✅ Подключено! Скорость: ${payload.speedFmt}, за 24ч: ${payload.up24hFmt}.\nТеперь можно добавить виджет на рабочий стол."
+                        TbrWidgetProvider.renderFromCache(this, null)
+                        val spd = payload?.speedFmt ?: "-"
+                        val up24 = payload?.up24hFmt ?: "-"
+                        tvStatus.text = "✅ Подключено! Скорость: $spd, за 24ч: $up24.\nКэш сохранён — добавляйте виджет на рабочий стол."
                     }.onFailure { err ->
                         tvStatus.text = "❌ Ошибка: ${err.message}"
                     }
