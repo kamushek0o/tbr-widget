@@ -17,12 +17,12 @@ data class WidgetPayload(
 )
 
 object ApiClient {
-    fun fetchWidgetData(baseUrl: String, token: String): Result<WidgetPayload> {
+    fun fetchWidgetData(baseUrl: String, token: String, chartType: String = "speed"): Result<WidgetPayload> {
         return try {
             val jsonStr = httpGetText("$baseUrl/api/widget", token)
             val obj = JSONObject(jsonStr)
             val bmp = try {
-                httpGetBitmap("$baseUrl/api/widget/chart.png?hours=24&w=600&h=200", token)
+                httpGetBitmap("$baseUrl/api/widget/chart.png?type=$chartType&hours=24&w=600&h=200", token)
             } catch (_: Exception) {
                 null
             }

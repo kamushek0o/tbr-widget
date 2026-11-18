@@ -21,13 +21,20 @@ class TbrWidgetProvider : AppWidgetProvider() {
 
     override fun onReceive(ctx: Context, intent: Intent) {
         super.onReceive(ctx, intent)
-        if (intent.action == ACTION_REFRESH) {
-            WidgetWorker.runNow(ctx)
+        when (intent.action) {
+            ACTION_REFRESH -> WidgetWorker.runNow(ctx)
+            ACTION_TOGGLE_CHART -> {
+                val cur = Prefs.getChartType(ctx)
+                val next = if (cur == "speed") "daily" else "speed"
+                Prefs.setChartType(ctx, next)
+                WidgetWorker.runNow(ctx)
+            }
         }
     }
 
     companion object {
         const val ACTION_REFRESH = "com.tbrpro.widget.ACTION_REFRESH"
+        const val ACTION_TOGGLE_CHART = "com.tbrpro.widget.ACTION_TOGGLE_CHART"
 
         fun updateAllWidgets(ctx: Context, data: WidgetPayload?, errorMsg: String?) {
             val mgr = AppWidgetManager.getInstance(ctx)
@@ -58,6 +65,14 @@ class TbrWidgetProvider : AppWidgetProvider() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             views.setOnClickPendingIntent(R.id.btn_refresh, refPi)
+
+            // Кнопка 📊 переключения графиков
+            val toggleIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_TOGGLE_CHART }
+            val togglePi = PendingIntent.getBroadcast(
+                ctx, 3, toggleIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            views.setOnClickPendingIntent(R.id.btn_chart_toggle, togglePi)
 
             // Тап по телу виджета открывает PWA/веб-дашборд
             val url = Prefs.getUrl(ctx)

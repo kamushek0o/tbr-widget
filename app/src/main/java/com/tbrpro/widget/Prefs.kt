@@ -35,4 +35,9 @@ object Prefs {
     fun getUrl(ctx: Context): String = getPrefs(ctx).getString("server_url", "") ?: ""
     fun getToken(ctx: Context): String = getPrefs(ctx).getString("token", "") ?: ""
     fun getIntervalMin(ctx: Context): Long = getPrefs(ctx).getLong("interval_min", 30L)
+
+    fun getChartType(ctx: Context): String = getPrefs(ctx).getString("chart_type", "speed") ?: "speed"
+    fun setChartType(ctx: Context, type: String) {
+        getPrefs(ctx).edit().putString("chart_type", type).apply()
+    }
 }
