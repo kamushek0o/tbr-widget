@@ -33,7 +33,7 @@ class TbrWidgetProvider : AppWidgetProvider() {
                     else -> "1"
                 }
                 Prefs.setChartMode(ctx, nextMode)
-                renderFromCache(ctx, null) // Мгновенно из кэша без сети!
+                renderFromCache(ctx, null)
             }
         }
     }
@@ -81,16 +81,15 @@ class TbrWidgetProvider : AppWidgetProvider() {
                         views.setViewVisibility(R.id.iv_chart_3, View.GONE)
                     }
                     "3" -> {
-                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderTop(data.topSeries, 540, 200))
+                        views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderTop(data.topSeries, 540, 200, data.topPeriod, data.topScale))
                         views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
                         views.setViewVisibility(R.id.iv_chart_2, View.GONE)
                         views.setViewVisibility(R.id.iv_chart_3, View.GONE)
                     }
                     else -> {
-                        // Все 3 графика: 500x125 RGB_565 (~122 KB каждый -> ~366 KB суммарно < 500 KB)
                         views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, 500, 125))
                         views.setImageViewBitmap(R.id.iv_chart_2, WidgetChartRenderer.renderDaily(data.dailySeries, 500, 125))
-                        views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, 500, 140))
+                        views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, 500, 140, data.topPeriod, data.topScale))
                         views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
                         views.setViewVisibility(R.id.iv_chart_2, View.VISIBLE)
                         views.setViewVisibility(R.id.iv_chart_3, View.VISIBLE)
@@ -103,34 +102,20 @@ class TbrWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.tv_footer, "⚠️ $errorMsg ($nowStr)")
             }
 
-            // Уникальный requestCode для каждого PendingIntent
             val refIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_REFRESH }
-            val refPi = PendingIntent.getBroadcast(
-                ctx, 101, refIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val refPi = PendingIntent.getBroadcast(ctx, 101, refIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             views.setOnClickPendingIntent(R.id.btn_refresh, refPi)
 
             val toggleIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_TOGGLE_CHART }
-            val togglePi = PendingIntent.getBroadcast(
-                ctx, 103, toggleIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val togglePi = PendingIntent.getBroadcast(ctx, 103, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             views.setOnClickPendingIntent(R.id.btn_chart_toggle, togglePi)
 
             val url = Prefs.getUrl(ctx)
-            val tapIntent = if (url.isNotBlank()) {
-                Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            } else {
-                Intent(ctx, MainActivity::class.java)
-            }
-            val tapPi = PendingIntent.getActivity(
-                ctx, 102, tapIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val tapIntent = if (url.isNotBlank()) Intent(Intent.ACTION_VIEW, Uri.parse(url)) else Intent(ctx, MainActivity::class.java)
+            val tapPi = PendingIntent.getActivity(ctx, 102, tapIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             views.setOnClickPendingIntent(R.id.widget_root, tapPi)
 
             mgr.updateAppWidget(ids, views)
         }
     }
-}
+}`/

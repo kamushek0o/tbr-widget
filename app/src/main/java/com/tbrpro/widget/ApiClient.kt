@@ -14,6 +14,8 @@ data class WidgetData(
     val speedFmt: String,
     val up24hFmt: String,
     val diskFreeFmt: String,
+    val topPeriod: String,
+    val topScale: String,
     val speedSeries: List<SpeedPt>,
     val dailySeries: List<BarPt>,
     val topSeries: List<BarPt>
@@ -30,9 +32,7 @@ object ApiClient {
             }
             try {
                 val code = conn.responseCode
-                if (code !in 200..299) {
-                    throw IllegalStateException("HTTP $code")
-                }
+                if (code !in 200..299) throw IllegalStateException("HTTP $code")
                 val text = conn.inputStream.bufferedReader().use { it.readText() }
                 JSONObject(text)
                 Result.success(text)
@@ -84,6 +84,8 @@ object ApiClient {
                 speedFmt = obj.optString("current_speed_fmt", "0 B/s"),
                 up24hFmt = obj.optString("uploaded_24h_fmt", "0 B"),
                 diskFreeFmt = obj.optString("disk_free_fmt", "0 B"),
+                topPeriod = charts?.optString("top_period", "1d") ?: "1d",
+                topScale = charts?.optString("top_scale", "lin") ?: "lin",
                 speedSeries = speeds,
                 dailySeries = dailies,
                 topSeries = tops
