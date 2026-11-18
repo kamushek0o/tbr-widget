@@ -35,7 +35,10 @@ android {
             if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 
