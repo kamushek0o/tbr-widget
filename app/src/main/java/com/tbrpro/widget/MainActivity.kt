@@ -3,9 +3,11 @@ package com.tbrpro.widget
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,6 +20,7 @@ import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
     private val intervals = listOf(15L, 30L, 60L)
+    private var latestUpdateInfo: UpdateReleaseInfo? = null
 
     private val qrScannerLauncher = registerForActivityResult(ScanContract()) { result ->
         if (result.contents != null) {
@@ -44,7 +47,12 @@ class MainActivity : AppCompatActivity() {
         val btnScan = findViewById<Button>(R.id.btn_scan_qr)
         val btnExchange = findViewById<Button>(R.id.btn_exchange)
         val btnSave = findViewById<Button>(R.id.btn_save)
+        val btnCheckUpd = findViewById<Button>(R.id.btn_check_update)
+        val btnUpdNow = findViewById<Button>(R.id.btn_update_now)
+        val tvVersion = findViewById<TextView>(R.id.tv_app_version)
         val tvStatus = findViewById<TextView>(R.id.tv_status)
+
+        tvVersion.text = "Версия виджета: v${AppUpdater.getCurrentVersion(this)}"
 
         spInt.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item,
@@ -117,6 +125,52 @@ class MainActivity : AppCompatActivity() {
                     }.onFailure { err ->
                         tvStatus.text = "❌ Ошибка: ${err.message}"
                     }
+                }
+            }
+        }
+
+        btnCheckUpd.setOnClickListener {
+            checkForWidgetUpdates(manual = true)
+        }
+
+        btnUpdNow.setOnClickListener {
+            val info = latestUpdateInfo ?: return@setOnClickListener
+            btnUpdNow.isEnabled = false
+            tvStatus.text = "⏳ Скачивание tbr-widget v${info.latestVersion}..."
+            thread {
+                val res = AppUpdater.downloadAndInstallApk(this, info)
+                runOnUiThread {
+                    btnUpdNow.isEnabled = true
+                    res.onSuccess { msg -> tvStatus.text = "🚀 $msg" }
+                        .onFailure { err -> tvStatus.text = "❌ Ошибка обновления: ${err.message}" }
+                }
+            }
+        }
+
+        checkForWidgetUpdates(manual = false)
+    }
+
+    private fun checkForWidgetUpdates(manual: Boolean) {
+        val banner = findViewById<LinearLayout>(R.id.banner_update)
+        val tvBanner = findViewById<TextView>(R.id.tv_update_banner)
+        val tvStatus = findViewById<TextView>(R.id.tv_status)
+        if (manual) tvStatus.text = "⏳ Проверяем обновления на GitHub..."
+
+        thread {
+            val res = AppUpdater.checkLatestRelease(this)
+            runOnUiThread {
+                res.onSuccess { info ->
+                    latestUpdateInfo = info
+                    if (info.updateAvailable) {
+                        banner.visibility = View.VISIBLE
+                        tvBanner.text = "⬆️ Доступно обновление v${info.latestVersion}"
+                        if (manual) tvStatus.text = "🔥 Доступен релиз v${info.latestVersion}! Нажмите «Обновить» сверху."
+                    } else {
+                        banner.visibility = View.GONE
+                        if (manual) tvStatus.text = "✅ Установлена актуальная версия v${info.currentVersion}."
+                    }
+                }.onFailure { err ->
+                    if (manual) tvStatus.text = "❌ Не удалось проверить обновления: ${err.message}"
                 }
             }
         }

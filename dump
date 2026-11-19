@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+tbr PRO / tbr-widget — Codebase Exporter.
+Dumps all tracked/non-ignored text files into a single structured file.
+Strictly respects .gitignore. No external dependencies required.
+"""
+
+import os
+import sys
+import fnmatch
+import subprocess
+from pathlib import Path
+
+# Выходной файл дампа
+OUTPUT_FILE = "project_dump.txt"
+
+# Расширения, которые никогда не тянем в дамп (бинарники, медиа, кэш)
+BINARY_EXTS = {
+    ".exe", ".dll", ".pyd", ".so", ".bin",
+    ".db", ".sqlite", ".sqlite3", ".wal", ".shm",
+    ".png", ".jpg", ".jpeg", ".ico", ".webp", ".gif",
+    ".zip", ".tar", ".gz", ".7z", ".apk", ".aar",
+    ".class", ".dex", ".pyc", ".pyo",
+    ".pdf", ".ttf", ".woff", ".woff2"
+}
+
+# Папки-паразиты для фоллбэк-режима (если git недоступен)
+DEFAULT_IGNORES = {
+    ".git", "__pycache__", "venv", ".venv", "env",
+    "build", "dist", ".idea", ".vscode", "gradle",
+    "node_modules", "target", ".gradle"
+}
+
+
+def is_binary_content(filepath: Path) -> bool:
+    """Проверяет, содержит ли файл бинарные данные (нулевые байты)."""
+    if filepath.suffix.lower() in BINARY_EXTS:
+        return True
+    try:
+        with open(filepath, "rb") as f:
+            chunk = f.read(1024)
+            return b"\x00" in chunk
+    except Exception:
+        return True
+
+
+def get_files_via_git(root: Path) -> list[Path] | None:
+    """Получает список файлов через git (учитывает .gitignore идеально)."""
+    try:
+        cmd = ["git", "ls-files", "--cached", "--others", "--exclude-standard"]
+        res = subprocess.run(
+            cmd,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True
+        )
+        files = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            p = root / line
+            if p.is_file() and p.name != OUTPUT_FILE:
+                files.append(p)
+        return files
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+
+def parse_gitignore(root: Path) -> list[str]:
+    """Простой парсер .gitignore для фоллбэка."""
+    ignore_patterns = list(DEFAULT_IGNORES)
+    gitignore_path = root / ".gitignore"
+    if gitignore_path.is_file():
+        try:
+            with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        # Убираем trailing slash для fnmatch
+                        ignore_patterns.append(line.rstrip("/"))
+        except Exception:
+            pass
+    return ignore_patterns
+
+
+def is_ignored_fallback(rel_path_str: str, patterns: list[str]) -> bool:
+    """Проверяет путь по паттернам для фоллбэк-режима."""
+    parts = rel_path_str.replace("\\", "/").split("/")
+    for part in parts:
+        if part in DEFAULT_IGNORES:
+            return True
+
+    normalized = rel_path_str.replace("\\", "/")
+    for pat in patterns:
+        if fnmatch.fnmatch(normalized, pat) or fnmatch.fnmatch(parts[-1], pat):
+            return True
+        if fnmatch.fnmatch(normalized, f"*{pat}*"):
+            return True
+    return False
+
+
+def get_files_fallback(root: Path) -> list[Path]:
+    """Фоллбэк-сканер директорий, если git отсутствует."""
+    patterns = parse_gitignore(root)
+    collected = []
+
+    for curr_root, dirs, files in os.walk(root):
+        rel_dir = os.path.relpath(curr_root, root)
+        
+        # Срезаем игнорируемые директории на лету
+        dirs[:] = [
+            d for d in dirs 
+            if not is_ignored_fallback(
+                os.path.normpath(os.path.join(rel_dir, d)), patterns
+            )
+        ]
+
+        for file in files:
+            if file == OUTPUT_FILE:
+                continue
+            full_path = Path(curr_root) / file
+            rel_file = os.path.relpath(full_path, root)
+            if not is_ignored_fallback(rel_file, patterns):
+                collected.append(full_path)
+
+    return collected
+
+
+def main():
+    root = Path.cwd()
+    print(f"[*] Сканируем репозиторий: {root}")
+
+    # 1. Пробуем получить файлы через git
+    files = get_files_via_git(root)
+    if files is not None:
+        print(f"[+] Git обнаружен. Найдено кандидатов: {len(files)}")
+    else:
+        print("[!] Git недоступен или это не репо. Работает fallback-сканер...")
+        files = get_files_fallback(root)
+        print(f"[+] Найдено кандидатов: {len(files)}")
+
+    # 2. Фильтруем бинарники и собираем дамп
+    out_path = root / OUTPUT_FILE
+    written_count = 0
+    skipped_binaries = 0
+
+    with open(out_path, "w", encoding="utf-8", errors="replace") as out:
+        for file_path in sorted(files):
+            rel_path = file_path.relative_to(root).as_posix()
+
+            if is_binary_content(file_path):
+                skipped_binaries += 1
+                continue
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                print(f"[!] Ошибка чтения {rel_path}: {e}")
+                continue
+
+            header = f"\n{'=' * 80}\nFILE: {rel_path}\n{'=' * 80}\n"
+            out.write(header)
+            out.write(content)
+            if not content.endswith("\n"):
+                out.write("\n")
+
+            written_count += 1
+
+    print("\n" + "=" * 40)
+    print(f"[✓] Готово! Результат сохранён в: {OUTPUT_FILE}")
+    print(f"    - Текстовых файлов экспортировано: {written_count}")
+    print(f"    - Бинарников пропущено: {skipped_binaries}")
+    print("=" * 40)
+
+
+if __name__ == "__main__":
+    main()

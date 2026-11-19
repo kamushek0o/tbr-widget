@@ -1,0 +1,1540 @@
+
+================================================================================
+FILE: .github/workflows/release.yml
+================================================================================
+name: Build & Release Android APK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Prepare Release Keystore
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.jks
+          else
+            keytool -genkeypair -v -keystore release.jks -alias tbrkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass tbrpro123 -keypass tbrpro123 \
+              -dname "CN=tbrPRO,O=tbr,C=RU"
+          fi
+
+      - name: Build Signed Release APK
+        env:
+          SIGNING_STORE_FILE: ${{ github.workspace }}/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD || 'tbrpro123' }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS || 'tbrkey' }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD || 'tbrpro123' }}
+        run: gradle assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk tbr-widget-${{ github.ref_name }}.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tbr-widget-${{ github.ref_name }}.apk
+          generate_release_notes: true
+
+================================================================================
+FILE: .gitignore
+================================================================================
+publish.bat
+
+================================================================================
+FILE: app/build.gradle.kts
+================================================================================
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.tbrpro.widget"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.tbrpro.widget"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 2
+        versionName = "1.2.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("SIGNING_STORE_FILE")
+            if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD") ?: "tbrpro123"
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS") ?: "tbrkey"
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD") ?: "tbrpro123"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            val ksPath = System.getenv("SIGNING_STORE_FILE")
+            if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+}
+
+================================================================================
+FILE: app/proguard-rules.pro
+================================================================================
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn org.joda.convert.**
+
+================================================================================
+FILE: app/src/main/AndroidManifest.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="tbr PRO Widget"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.AppCompat.NoActionBar"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".TbrWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.tbrpro.widget.ACTION_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tbr_widget_info" />
+        </receiver>
+    </application>
+</manifest>
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/ApiClient.kt
+================================================================================
+package com.tbrpro.widget
+
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+data class SpeedPt(val label: String, val speedMbs: Float)
+data class BarPt(val label: String, val gb: Float)
+
+data class WidgetData(
+    val qbRunning: Boolean,
+    val activeTorrents: Int,
+    val totalTorrents: Int,
+    val speedFmt: String,
+    val up24hFmt: String,
+    val diskFreeFmt: String,
+    val topPeriod: String,
+    val topScale: String,
+    val speedSeries: List<SpeedPt>,
+    val dailySeries: List<BarPt>,
+    val topSeries: List<BarPt>
+)
+
+object ApiClient {
+    fun exchangeLoginPassword(baseUrl: String, login: String, pass: String): Result<String> {
+        return try {
+            val conn = (URL("$baseUrl/api/auth/exchange").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val body = JSONObject().apply {
+                put("login", login)
+                put("password", pass)
+            }.toString().toByteArray(Charsets.UTF_8)
+
+            conn.outputStream.use { it.write(body) }
+            val code = conn.responseCode
+            val respStr = (if (code in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val obj = JSONObject(respStr)
+            if (obj.optBoolean("success", false)) {
+                Result.success(obj.getString("api_token"))
+            } else {
+                Result.failure(IllegalStateException(obj.optString("error", "HTTP $code")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun fetchWidgetJson(baseUrl: String, token: String): Result<String> {
+        return try {
+            val conn = (URL("$baseUrl/api/widget").openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                if (token.isNotBlank()) setRequestProperty("Authorization", "Bearer $token")
+            }
+            try {
+                val code = conn.responseCode
+                if (code !in 200..299) throw IllegalStateException("HTTP $code")
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                JSONObject(text)
+                Result.success(text)
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun parseWidgetJson(rawJson: String?): WidgetData? {
+        if (rawJson.isNullOrBlank()) return null
+        return try {
+            val obj = JSONObject(rawJson)
+            val charts = obj.optJSONObject("charts")
+
+            val speeds = mutableListOf<SpeedPt>()
+            val spArr = charts?.optJSONArray("speed_24h")
+            if (spArr != null) {
+                for (i in 0 until spArr.length()) {
+                    val item = spArr.optJSONObject(i) ?: continue
+                    speeds.add(SpeedPt(item.optString("label", ""), item.optDouble("speed_mbs", 0.0).toFloat()))
+                }
+            }
+
+            val dailies = mutableListOf<BarPt>()
+            val dlArr = charts?.optJSONArray("daily_7d")
+            if (dlArr != null) {
+                for (i in 0 until dlArr.length()) {
+                    val item = dlArr.optJSONObject(i) ?: continue
+                    dailies.add(BarPt(item.optString("label", ""), item.optDouble("gb", 0.0).toFloat()))
+                }
+            }
+
+            val tops = mutableListOf<BarPt>()
+            val topArr = charts?.optJSONArray("top_5")
+            if (topArr != null) {
+                for (i in 0 until topArr.length()) {
+                    val item = topArr.optJSONObject(i) ?: continue
+                    tops.add(BarPt(item.optString("name", ""), item.optDouble("gb", 0.0).toFloat()))
+                }
+            }
+
+            WidgetData(
+                qbRunning = obj.optBoolean("qb_running", false),
+                activeTorrents = obj.optInt("active_torrents", 0),
+                totalTorrents = obj.optInt("total_torrents", 0),
+                speedFmt = obj.optString("current_speed_fmt", "0 B/s"),
+                up24hFmt = obj.optString("uploaded_24h_fmt", "0 B"),
+                diskFreeFmt = obj.optString("disk_free_fmt", "0 B"),
+                topPeriod = charts?.optString("top_period", "1d") ?: "1d",
+                topScale = charts?.optString("top_scale", "lin") ?: "lin",
+                speedSeries = speeds,
+                dailySeries = dailies,
+                topSeries = tops
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/MainActivity.kt
+================================================================================
+package com.tbrpro.widget
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Spinner
+import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONObject
+import kotlin.concurrent.thread
+
+class MainActivity : AppCompatActivity() {
+    private val intervals = listOf(15L, 30L, 60L)
+
+    private val qrScannerLauncher = registerForActivityResult(ScanContract()) { result ->
+        if (result.contents != null) {
+            handleScannedQr(result.contents)
+        }
+    }
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) launchQrScanner()
+        else findViewById<TextView>(R.id.tv_status).text = "⚠️ Разрешение на камеру не предоставлено"
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        val etUrl = findViewById<EditText>(R.id.et_url)
+        val etToken = findViewById<EditText>(R.id.et_token)
+        val etLogin = findViewById<EditText>(R.id.et_login)
+        val etPassword = findViewById<EditText>(R.id.et_password)
+        val spInt = findViewById<Spinner>(R.id.sp_interval)
+        val btnScan = findViewById<Button>(R.id.btn_scan_qr)
+        val btnExchange = findViewById<Button>(R.id.btn_exchange)
+        val btnSave = findViewById<Button>(R.id.btn_save)
+        val tvStatus = findViewById<TextView>(R.id.tv_status)
+
+        spInt.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            listOf("Каждые 15 мин", "Каждые 30 мин", "Каждый 1 час")
+        )
+
+        etUrl.setText(Prefs.getUrl(this))
+        etToken.setText(Prefs.getToken(this))
+        spInt.setSelection(intervals.indexOf(Prefs.getIntervalMin(this)).coerceAtLeast(0))
+
+        btnScan.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                launchQrScanner()
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+
+        btnExchange.setOnClickListener {
+            val url = etUrl.text.toString().trim().trimEnd('/')
+            val login = etLogin.text.toString().trim()
+            val pwd = etPassword.text.toString().trim()
+            if (url.isBlank() || login.isBlank() || pwd.isBlank()) {
+                tvStatus.text = "❌ Укажите URL, логин и пароль"
+                return@setOnClickListener
+            }
+            btnExchange.isEnabled = false
+            tvStatus.text = "⏳ Получение API-токена..."
+            thread {
+                val res = ApiClient.exchangeLoginPassword(url, login, pwd)
+                runOnUiThread {
+                    btnExchange.isEnabled = true
+                    res.onSuccess { tok ->
+                        etToken.setText(tok)
+                        etPassword.setText("")
+                        tvStatus.text = "✅ Токен получен! Нажмите «Проверить и сохранить»"
+                    }.onFailure { err ->
+                        tvStatus.text = "❌ Ошибка входа: ${err.message}"
+                    }
+                }
+            }
+        }
+
+        btnSave.setOnClickListener {
+            val url = etUrl.text.toString().trim().trimEnd('/')
+            val token = etToken.text.toString().trim()
+            val interval = intervals[spInt.selectedItemPosition]
+
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                tvStatus.text = "❌ URL должен начинаться с http:// или https://"
+                return@setOnClickListener
+            }
+
+            btnSave.isEnabled = false
+            tvStatus.text = "⏳ Проверка подключения к $url..."
+
+            thread {
+                val res = ApiClient.fetchWidgetJson(url, token)
+                runOnUiThread {
+                    btnSave.isEnabled = true
+                    res.onSuccess { rawJson ->
+                        val payload = ApiClient.parseWidgetJson(rawJson)
+                        Prefs.saveConfig(this, url, token, interval)
+                        Prefs.saveCachedJson(this, rawJson)
+                        WidgetWorker.schedulePeriodic(this, interval)
+                        TbrWidgetProvider.renderFromCache(this, null)
+                        val spd = payload?.speedFmt ?: "-"
+                        val up24 = payload?.up24hFmt ?: "-"
+                        tvStatus.text = "✅ Подключено! Скорость: $spd, за 24ч: $up24.\nКэш обновлён."
+                    }.onFailure { err ->
+                        tvStatus.text = "❌ Ошибка: ${err.message}"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun launchQrScanner() {
+        val options = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Наведите камеру на QR-код из настроек tbr PRO")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }
+        qrScannerLauncher.launch(options)
+    }
+
+    private fun handleScannedQr(contents: String) {
+        val tvStatus = findViewById<TextView>(R.id.tv_status)
+        try {
+            val obj = JSONObject(contents)
+            val url = obj.optString("url", "")
+            val token = obj.optString("token", "")
+            if (url.isNotBlank()) findViewById<EditText>(R.id.et_url).setText(url)
+            if (token.isNotBlank()) findViewById<EditText>(R.id.et_token).setText(token)
+            tvStatus.text = "✅ Параметры подставлены из QR! Нажмите «Проверить и сохранить»"
+        } catch (_: Exception) {
+            if (contents.startsWith("http://") || contents.startsWith("https://")) {
+                findViewById<EditText>(R.id.et_url).setText(contents.trimEnd('/'))
+                tvStatus.text = "✅ URL подставлен из QR! Введите токен и сохраните"
+            } else {
+                tvStatus.text = "⚠️ Неизвестный формат QR-кода"
+            }
+        }
+    }
+}
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/Prefs.kt
+================================================================================
+package com.tbrpro.widget
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import java.io.File
+
+object Prefs {
+    private const val FILE_NAME = "tbr_widget_secure"
+    private const val CACHE_FILE = "widget_data.json"
+
+    private fun getPrefs(ctx: Context): SharedPreferences {
+        return try {
+            val mk = MasterKey.Builder(ctx)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                ctx, FILE_NAME, mk,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (_: Exception) {
+            ctx.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
+        }
+    }
+
+    fun saveConfig(ctx: Context, url: String, token: String, intervalMin: Long) {
+        val cleanUrl = url.trim().trimEnd('/')
+        getPrefs(ctx).edit()
+            .putString("server_url", cleanUrl)
+            .putString("token", token.trim())
+            .putLong("interval_min", intervalMin.coerceAtLeast(15L))
+            .apply()
+    }
+
+    fun getUrl(ctx: Context): String = getPrefs(ctx).getString("server_url", "") ?: ""
+    fun getToken(ctx: Context): String = getPrefs(ctx).getString("token", "") ?: ""
+    fun getIntervalMin(ctx: Context): Long = getPrefs(ctx).getLong("interval_min", 30L)
+
+    fun getChartMode(ctx: Context): String = getPrefs(ctx).getString("chart_mode", "1") ?: "1"
+    fun setChartMode(ctx: Context, mode: String) {
+        getPrefs(ctx).edit().putString("chart_mode", mode).apply()
+    }
+
+    fun saveCachedJson(ctx: Context, rawJson: String) {
+        try {
+            File(ctx.cacheDir, CACHE_FILE).writeText(rawJson, Charsets.UTF_8)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun loadCachedJson(ctx: Context): String? {
+        return try {
+            val f = File(ctx.cacheDir, CACHE_FILE)
+            if (f.exists()) f.readText(Charsets.UTF_8) else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/TbrWidgetProvider.kt
+================================================================================
+package com.tbrpro.widget
+
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.net.Uri
+import android.os.Bundle
+import android.view.View
+import android.widget.RemoteViews
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class TbrWidgetProvider : AppWidgetProvider() {
+
+    override fun onUpdate(ctx: Context, mgr: AppWidgetManager, ids: IntArray) {
+        renderFromCache(ctx, null)
+        WidgetWorker.runNow(ctx)
+    }
+
+    override fun onAppWidgetOptionsChanged(ctx: Context, mgr: AppWidgetManager, id: Int, newOptions: Bundle) {
+        super.onAppWidgetOptionsChanged(ctx, mgr, id, newOptions)
+        renderFromCache(ctx, null)
+    }
+
+    override fun onReceive(ctx: Context, intent: Intent) {
+        super.onReceive(ctx, intent)
+        when (intent.action) {
+            ACTION_REFRESH -> WidgetWorker.runNow(ctx)
+            ACTION_TOGGLE_CHART -> {
+                val nextMode = when (Prefs.getChartMode(ctx)) {
+                    "1" -> "2"
+                    "2" -> "3"
+                    "3" -> "all"
+                    else -> "1"
+                }
+                Prefs.setChartMode(ctx, nextMode)
+                renderFromCache(ctx, null)
+            }
+        }
+    }
+
+    companion object {
+        const val ACTION_REFRESH = "com.tbrpro.widget.ACTION_REFRESH"
+        const val ACTION_TOGGLE_CHART = "com.tbrpro.widget.ACTION_TOGGLE_CHART"
+
+        fun renderFromCache(ctx: Context, errorMsg: String?) {
+            val mgr = AppWidgetManager.getInstance(ctx)
+            val ids = mgr.getAppWidgetIds(ComponentName(ctx, TbrWidgetProvider::class.java))
+            if (ids.isEmpty()) return
+
+            val density = ctx.resources.displayMetrics.density
+            val data = ApiClient.parseWidgetJson(Prefs.loadCachedJson(ctx))
+            val mode = Prefs.getChartMode(ctx)
+            val nowStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+            val modeBadge = when (mode) { "1" -> "1/3"; "2" -> "2/3"; "3" -> "3/3"; else -> "Все" }
+
+            for (widgetId in ids) {
+                val views = RemoteViews(ctx.packageName, R.layout.widget_tbr)
+                views.setTextViewText(R.id.btn_chart_toggle, modeBadge)
+
+                val opts = mgr.getAppWidgetOptions(widgetId)
+                val minWdp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 250).coerceAtLeast(180)
+                val minHdp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 130).coerceAtLeast(100)
+                val targetWpx = ((minWdp - 20) * density).toInt().coerceIn(240, 540)
+                val chartAreaHpx = ((minHdp - 70) * density).toInt().coerceIn(80, 500)
+
+                if (data != null) {
+                    views.setTextViewText(R.id.tv_qb_badge, if (data.qbRunning) "● qB OK" else "● qB OFF")
+                    views.setTextColor(R.id.tv_qb_badge, Color.parseColor(if (data.qbRunning) "#2ECC71" else "#E74C3C"))
+                    views.setTextViewText(R.id.tv_speed, data.speedFmt)
+                    views.setTextViewText(R.id.tv_24h, data.up24hFmt)
+                    views.setTextViewText(R.id.tv_disk, data.diskFreeFmt)
+
+                    when (mode) {
+                        "1" -> {
+                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, targetWpx, chartAreaHpx))
+                            views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                            views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                            views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                        }
+                        "2" -> {
+                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderDaily(data.dailySeries, targetWpx, chartAreaHpx))
+                            views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                            views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                            views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                        }
+                        "3" -> {
+                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderTop(data.topSeries, targetWpx, chartAreaHpx, data.topPeriod, data.topScale))
+                            views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                            views.setViewVisibility(R.id.iv_chart_2, View.GONE)
+                            views.setViewVisibility(R.id.iv_chart_3, View.GONE)
+                        }
+                        else -> {
+                            val slotH = (chartAreaHpx / 3).coerceIn(80, 160)
+                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, targetWpx, slotH))
+                            views.setImageViewBitmap(R.id.iv_chart_2, WidgetChartRenderer.renderDaily(data.dailySeries, targetWpx, slotH))
+                            views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, targetWpx, slotH, data.topPeriod, data.topScale))
+                            views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
+                            views.setViewVisibility(R.id.iv_chart_2, View.VISIBLE)
+                            views.setViewVisibility(R.id.iv_chart_3, View.VISIBLE)
+                        }
+                    }
+                    val statusTxt = if (!errorMsg.isNullOrBlank()) "⚠️ $errorMsg • $nowStr" else "Раздач: ${data.activeTorrents}/${data.totalTorrents} • $nowStr"
+                    views.setTextViewText(R.id.tv_footer, statusTxt)
+                } else if (!errorMsg.isNullOrBlank()) {
+                    views.setTextViewText(R.id.tv_footer, "⚠️ $errorMsg ($nowStr)")
+                }
+
+                val refIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_REFRESH }
+                views.setOnClickPendingIntent(
+                    R.id.btn_refresh,
+                    PendingIntent.getBroadcast(ctx, 101, refIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                )
+
+                val toggleIntent = Intent(ctx, TbrWidgetProvider::class.java).apply { action = ACTION_TOGGLE_CHART }
+                views.setOnClickPendingIntent(
+                    R.id.btn_chart_toggle,
+                    PendingIntent.getBroadcast(ctx, 103, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                )
+
+                val url = Prefs.getUrl(ctx)
+                val webIntent = if (url.isNotBlank()) Intent(Intent.ACTION_VIEW, Uri.parse(url)) else Intent(ctx, MainActivity::class.java)
+                views.setOnClickPendingIntent(
+                    R.id.btn_open_web,
+                    PendingIntent.getActivity(ctx, 104, webIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                )
+
+                val cfgIntent = Intent(ctx, MainActivity::class.java)
+                views.setOnClickPendingIntent(
+                    R.id.widget_root,
+                    PendingIntent.getActivity(ctx, 102, cfgIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                )
+
+                mgr.updateAppWidget(widgetId, views)
+            }
+        }
+    }
+}
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/WidgetChartRenderer.kt
+================================================================================
+package com.tbrpro.widget
+
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import java.util.Locale
+import kotlin.math.log10
+
+object WidgetChartRenderer {
+    private val BG_COLOR = Color.rgb(26, 26, 32)
+    private val GRID_COLOR = Color.rgb(44, 44, 54)
+    private val TEXT_MUTED = Color.rgb(149, 165, 166)
+    private val TEXT_MAIN = Color.rgb(235, 238, 242)
+
+    private fun newBitmap(w: Int, h: Int): Bitmap {
+        val safeW = w.coerceIn(240, 560)
+        val safeH = h.coerceIn(90, 220)
+        return Bitmap.createBitmap(safeW, safeH, Bitmap.Config.RGB_565).also {
+            Canvas(it).drawColor(BG_COLOR)
+        }
+    }
+
+    private fun drawHeaderAndNoData(canvas: Canvas, title: String, w: Int, h: Int, empty: Boolean) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = TEXT_MUTED
+            textSize = (h * 0.11f).coerceIn(14f, 20f)
+        }
+        canvas.drawText(title, 16f, p.textSize + 6f, p)
+        if (empty) {
+            p.textAlign = Paint.Align.CENTER
+            canvas.drawText("Нет данных", w / 2f, h / 2f + p.textSize / 2f, p)
+        }
+    }
+
+    private fun drawGrid(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
+        val gridP = Paint().apply { color = GRID_COLOR; strokeWidth = 1.5f }
+        for (i in 0..3) {
+            val y = top + (bottom - top) * (i / 3f)
+            canvas.drawLine(left, y, right, y, gridP)
+        }
+    }
+
+    fun renderSpeed(points: List<SpeedPt>, w: Int, h: Int): Bitmap {
+        val bmp = newBitmap(w, h)
+        val canvas = Canvas(bmp)
+        val maxVal = points.maxOfOrNull { it.speedMbs } ?: 0f
+        if (points.size < 2 || maxVal <= 0f) {
+            drawHeaderAndNoData(canvas, "⚡ Скорость (24ч)", bmp.width, bmp.height, true)
+            return bmp
+        }
+
+        val title = String.format(Locale.US, "⚡ Скорость (пик: %.2f MiB/s)", maxVal)
+        drawHeaderAndNoData(canvas, title, bmp.width, bmp.height, false)
+
+        val padL = 16f; val padR = 16f
+        val padT = (bmp.height * 0.22f).coerceAtLeast(26f); val padB = 24f
+        val plotW = (bmp.width - padL - padR).coerceAtLeast(10f)
+        val plotH = (bmp.height - padT - padB).coerceAtLeast(10f)
+        drawGrid(canvas, padL, padT, bmp.width - padR, padT + plotH)
+
+        val linePath = Path()
+        val fillPath = Path()
+        val n = points.size - 1
+        points.forEachIndexed { idx, pt ->
+            val x = padL + (idx.toFloat() / n.toFloat()) * plotW
+            val y = padT + plotH - ((pt.speedMbs.coerceAtLeast(0f) / maxVal) * plotH)
+            if (idx == 0) {
+                linePath.moveTo(x, y)
+                fillPath.moveTo(x, padT + plotH)
+                fillPath.lineTo(x, y)
+            } else {
+                linePath.lineTo(x, y)
+                fillPath.lineTo(x, y)
+            }
+            if (idx == n) fillPath.lineTo(x, padT + plotH)
+        }
+        fillPath.close()
+
+        canvas.drawPath(fillPath, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(65, 52, 152, 219); style = Paint.Style.FILL })
+        canvas.drawPath(linePath, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(52, 152, 219); strokeWidth = 3f; style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND })
+
+        val lblP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MUTED; textSize = 14f }
+        canvas.drawText(points.first().label, padL, bmp.height - 6f, lblP)
+        lblP.textAlign = Paint.Align.RIGHT
+        canvas.drawText(points.last().label, bmp.width - padR, bmp.height - 6f, lblP)
+        return bmp
+    }
+
+    fun renderDaily(bars: List<BarPt>, w: Int, h: Int): Bitmap {
+        val bmp = newBitmap(w, h)
+        val canvas = Canvas(bmp)
+        val maxVal = bars.maxOfOrNull { it.gb } ?: 0f
+        if (bars.isEmpty() || maxVal <= 0f) {
+            drawHeaderAndNoData(canvas, "📅 По дням (GiB)", bmp.width, bmp.height, true)
+            return bmp
+        }
+
+        val title = String.format(Locale.US, "📅 По дням (макс: %.1f GiB)", maxVal)
+        drawHeaderAndNoData(canvas, title, bmp.width, bmp.height, false)
+
+        val padL = 16f; val padR = 16f
+        val padT = (bmp.height * 0.22f).coerceAtLeast(26f); val padB = 24f
+        val plotW = (bmp.width - padL - padR).coerceAtLeast(10f)
+        val plotH = (bmp.height - padT - padB).coerceAtLeast(10f)
+        drawGrid(canvas, padL, padT, bmp.width - padR, padT + plotH)
+
+        val barP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(46, 204, 113) }
+        val lblP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MUTED; textSize = 13f; textAlign = Paint.Align.CENTER }
+        val slotW = plotW / bars.size.toFloat()
+        val barW = (slotW * 0.62f).coerceAtLeast(8f)
+
+        bars.forEachIndexed { idx, b ->
+            val cx = padL + (idx + 0.5f) * slotW
+            val bh = (b.gb.coerceAtLeast(0f) / maxVal) * plotH
+            canvas.drawRoundRect(cx - barW / 2f, padT + plotH - bh, cx + barW / 2f, padT + plotH, 5f, 5f, barP)
+            canvas.drawText(b.label, cx, bmp.height - 6f, lblP)
+        }
+        return bmp
+    }
+
+    fun renderTop(bars: List<BarPt>, w: Int, h: Int, period: String = "1d", scale: String = "lin"): Bitmap {
+        val bmp = newBitmap(w, h)
+        val canvas = Canvas(bmp)
+        val isLog = (scale == "log10")
+        val mapped = bars.map { b ->
+            val safe = b.gb.coerceAtLeast(0f)
+            if (isLog) log10(1f + safe) else safe
+        }
+        val maxPlot = mapped.maxOrNull() ?: 0f
+        if (bars.isEmpty() || maxPlot <= 0f) {
+            drawHeaderAndNoData(canvas, "🏆 Топ раздач", bmp.width, bmp.height, true)
+            return bmp
+        }
+
+        val perLbl = when (period) { "7d" -> "7д"; "30d" -> "30д"; "all" -> "Всё"; else -> "1д" }
+        val scLbl = if (isLog) "Log10" else "Lin"
+        drawHeaderAndNoData(canvas, "🏆 Топ-${bars.size} ($perLbl • $scLbl, GiB)", bmp.width, bmp.height, false)
+
+        val padL = 14f; val padR = 14f
+        val padT = (bmp.height * 0.20f).coerceAtLeast(24f); val padB = 8f
+        val nameColW = bmp.width * 0.44f
+        val valColW = 58f
+        val barMaxW = (bmp.width - padL - padR - nameColW - valColW - 12f).coerceAtLeast(20f)
+        val rowH = ((bmp.height - padT - padB) / bars.size.toFloat()).coerceAtLeast(16f)
+
+        val txtP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MAIN; textSize = (rowH * 0.55f).coerceIn(13f, 17f) }
+        val valP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MUTED; textSize = txtP.textSize * 0.9f; textAlign = Paint.Align.RIGHT }
+        val barP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(230, 126, 34) }
+
+        bars.forEachIndexed { idx, item ->
+            val cy = padT + idx * rowH + rowH * 0.5f
+            canvas.drawText(fitText(item.label, txtP, nameColW), padL, cy + txtP.textSize * 0.35f, txtP)
+
+            val barLeft = padL + nameColW + 6f
+            val ratio = (mapped[idx] / maxPlot).takeIf { it.isFinite() } ?: 0f
+            val bw = (ratio * barMaxW).coerceAtLeast(4f)
+            val barHalfH = (rowH * 0.30f).coerceAtLeast(4f)
+            canvas.drawRoundRect(barLeft, cy - barHalfH, barLeft + bw, cy + barHalfH, 4f, 4f, barP)
+
+            val valStr = String.format(Locale.US, "%.1fG", item.gb.coerceAtLeast(0f))
+            canvas.drawText(valStr, bmp.width - padR, cy + valP.textSize * 0.35f, valP)
+        }
+        return bmp
+    }
+
+    private fun fitText(raw: String, paint: Paint, maxWidth: Float): String {
+        val count = paint.breakText(raw, true, maxWidth, null)
+        if (count >= raw.length) return raw
+        return raw.substring(0, (count - 1).coerceAtLeast(1)) + "…"
+    }
+}
+
+================================================================================
+FILE: app/src/main/java/com/tbrpro/widget/WidgetWorker.kt
+================================================================================
+package com.tbrpro.widget
+
+import android.content.Context
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.Worker
+import androidx.work.WorkerParameters
+import java.util.concurrent.TimeUnit
+
+class WidgetWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
+    override fun doWork(): Result {
+        val url = Prefs.getUrl(applicationContext)
+        val token = Prefs.getToken(applicationContext)
+        if (url.isBlank()) return Result.success()
+
+        val res = ApiClient.fetchWidgetJson(url, token)
+        res.onSuccess { rawJson ->
+            Prefs.saveCachedJson(applicationContext, rawJson)
+            TbrWidgetProvider.renderFromCache(applicationContext, null)
+        }.onFailure { err ->
+            TbrWidgetProvider.renderFromCache(applicationContext, err.message ?: "Ошибка сети")
+        }
+        return Result.success()
+    }
+
+    companion object {
+        private const val PERIODIC_NAME = "tbr_widget_periodic"
+
+        fun schedulePeriodic(ctx: Context, intervalMin: Long) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val req = PeriodicWorkRequestBuilder<WidgetWorker>(
+                intervalMin.coerceAtLeast(15L), TimeUnit.MINUTES
+            ).setConstraints(constraints).build()
+
+            WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
+                PERIODIC_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                req
+            )
+        }
+
+        fun runNow(ctx: Context) {
+            val req = OneTimeWorkRequestBuilder<WidgetWorker>().build()
+            WorkManager.getInstance(ctx).enqueue(req)
+        }
+    }
+}
+
+================================================================================
+FILE: app/src/main/res/drawable/ic_launcher.xml
+================================================================================
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#1A1A20"
+        android:pathData="M10,0 L38,0 Q48,0 48,10 L48,38 Q48,48 38,48 L10,48 Q0,48 0,38 L0,10 Q0,0 10,0 Z" />
+    <path
+        android:fillColor="#2ECC71"
+        android:pathData="M26,6 L12,26 L24,26 L20,42 L36,22 L24,22 Z" />
+</vector>
+
+================================================================================
+FILE: app/src/main/res/drawable/widget_bg.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#1A1A20" />
+    <corners android:radius="14dp" />
+    <stroke android:width="1dp" android:color="#2A2A34" />
+</shape>
+
+================================================================================
+FILE: app/src/main/res/layout/activity_main.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121214"
+    android:padding="20dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚡ tbr PRO — Настройка виджета"
+            android:textColor="#2ECC71"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:layout_marginBottom="16dp"
+            android:text="Отсканируйте QR из настроек веб-интерфейса или введите параметры вручную:"
+            android:textColor="#95A5A6"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btn_scan_qr"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginBottom="18dp"
+            android:backgroundTint="#262630"
+            android:text="📷 Отсканировать QR-код"
+            android:textColor="#2ECC71"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="URL сервера:"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/et_url"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="12dp"
+            android:background="#262630"
+            android:hint="https://wowaplus.duckdns.org или http://100.x:5000"
+            android:inputType="textUri"
+            android:paddingHorizontal="12dp"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#6B7280"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="API-токен (tbr_api_...):"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/et_token"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="12dp"
+            android:background="#262630"
+            android:hint="tbr_api_..."
+            android:inputType="textPassword"
+            android:paddingHorizontal="12dp"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#6B7280"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Или вход по логину и паролю:"
+            android:textColor="#95A5A6"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="12dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/et_login"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="#262630"
+                android:hint="Логин"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#6B7280"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/et_password"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="#262630"
+                android:hint="Пароль"
+                android:inputType="textPassword"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#6B7280"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_exchange"
+                android:layout_width="wrap_content"
+                android:layout_height="46dp"
+                android:backgroundTint="#262630"
+                android:text="Войти"
+                android:textColor="#2ECC71"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Интервал автообновления:"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/sp_interval"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="18dp"
+            android:background="#262630"
+            android:paddingHorizontal="10dp" />
+
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:backgroundTint="#2ECC71"
+            android:text="Проверить и сохранить"
+            android:textColor="#000000"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="#1A1A20"
+            android:padding="12dp"
+            android:text="Ожидание проверки..."
+            android:textColor="#95A5A6"
+            android:textSize="13sp" />
+    </LinearLayout>
+</ScrollView>
+
+================================================================================
+FILE: app/src/main/res/layout/widget_tbr.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/tv_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="⚡ tbr PRO"
+            android:textColor="#2ECC71"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_qb_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="6dp"
+            android:text="● qB"
+            android:textColor="#95A5A6"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_open_web"
+            android:layout_width="26dp"
+            android:layout_height="24dp"
+            android:layout_marginEnd="4dp"
+            android:background="#262630"
+            android:gravity="center"
+            android:text="🌐"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/btn_chart_toggle"
+            android:layout_width="34dp"
+            android:layout_height="24dp"
+            android:layout_marginEnd="4dp"
+            android:background="#262630"
+            android:gravity="center"
+            android:text="1/3"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btn_refresh"
+            android:layout_width="26dp"
+            android:layout_height="24dp"
+            android:background="#262630"
+            android:gravity="center"
+            android:text="↻"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Скорость"
+                android:textColor="#95A5A6"
+                android:textSize="10sp" />
+            <TextView
+                android:id="@+id/tv_speed"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="#3498DB"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="За 24ч"
+                android:textColor="#95A5A6"
+                android:textSize="10sp" />
+            <TextView
+                android:id="@+id/tv_24h"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="#2ECC71"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Свободно"
+                android:textColor="#95A5A6"
+                android:textSize="10sp" />
+            <TextView
+                android:id="@+id/tv_disk"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="#E67E22"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/iv_chart_1"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="6dp"
+        android:layout_weight="1"
+        android:scaleType="fitXY" />
+
+    <ImageView
+        android:id="@+id/iv_chart_2"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="4dp"
+        android:layout_weight="1"
+        android:scaleType="fitXY"
+        android:visibility="gone" />
+
+    <ImageView
+        android:id="@+id/iv_chart_3"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="4dp"
+        android:layout_weight="1"
+        android:scaleType="fitXY"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_footer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:gravity="end"
+        android:text="Ожидание..."
+        android:textColor="#6B7280"
+        android:textSize="9sp" />
+</LinearLayout>
+
+================================================================================
+FILE: app/src/main/res/xml/network_security_config.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
+
+================================================================================
+FILE: app/src/main/res/xml/tbr_widget_info.xml
+================================================================================
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:initialLayout="@layout/widget_tbr"
+    android:minWidth="250dp"
+    android:minHeight="130dp"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
+
+================================================================================
+FILE: build.gradle.kts
+================================================================================
+plugins {
+    id("com.android.application") version "8.5.2" apply false
+    id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+}
+
+================================================================================
+FILE: dump
+================================================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+tbr PRO / tbr-widget — Codebase Exporter.
+Dumps all tracked/non-ignored text files into a single structured file.
+Strictly respects .gitignore. No external dependencies required.
+"""
+
+import os
+import sys
+import fnmatch
+import subprocess
+from pathlib import Path
+
+# Выходной файл дампа
+OUTPUT_FILE = "project_dump.txt"
+
+# Расширения, которые никогда не тянем в дамп (бинарники, медиа, кэш)
+BINARY_EXTS = {
+    ".exe", ".dll", ".pyd", ".so", ".bin",
+    ".db", ".sqlite", ".sqlite3", ".wal", ".shm",
+    ".png", ".jpg", ".jpeg", ".ico", ".webp", ".gif",
+    ".zip", ".tar", ".gz", ".7z", ".apk", ".aar",
+    ".class", ".dex", ".pyc", ".pyo",
+    ".pdf", ".ttf", ".woff", ".woff2"
+}
+
+# Папки-паразиты для фоллбэк-режима (если git недоступен)
+DEFAULT_IGNORES = {
+    ".git", "__pycache__", "venv", ".venv", "env",
+    "build", "dist", ".idea", ".vscode", "gradle",
+    "node_modules", "target", ".gradle"
+}
+
+
+def is_binary_content(filepath: Path) -> bool:
+    """Проверяет, содержит ли файл бинарные данные (нулевые байты)."""
+    if filepath.suffix.lower() in BINARY_EXTS:
+        return True
+    try:
+        with open(filepath, "rb") as f:
+            chunk = f.read(1024)
+            return b"\x00" in chunk
+    except Exception:
+        return True
+
+
+def get_files_via_git(root: Path) -> list[Path] | None:
+    """Получает список файлов через git (учитывает .gitignore идеально)."""
+    try:
+        cmd = ["git", "ls-files", "--cached", "--others", "--exclude-standard"]
+        res = subprocess.run(
+            cmd,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True
+        )
+        files = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            p = root / line
+            if p.is_file() and p.name != OUTPUT_FILE:
+                files.append(p)
+        return files
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+
+def parse_gitignore(root: Path) -> list[str]:
+    """Простой парсер .gitignore для фоллбэка."""
+    ignore_patterns = list(DEFAULT_IGNORES)
+    gitignore_path = root / ".gitignore"
+    if gitignore_path.is_file():
+        try:
+            with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        # Убираем trailing slash для fnmatch
+                        ignore_patterns.append(line.rstrip("/"))
+        except Exception:
+            pass
+    return ignore_patterns
+
+
+def is_ignored_fallback(rel_path_str: str, patterns: list[str]) -> bool:
+    """Проверяет путь по паттернам для фоллбэк-режима."""
+    parts = rel_path_str.replace("\\", "/").split("/")
+    for part in parts:
+        if part in DEFAULT_IGNORES:
+            return True
+
+    normalized = rel_path_str.replace("\\", "/")
+    for pat in patterns:
+        if fnmatch.fnmatch(normalized, pat) or fnmatch.fnmatch(parts[-1], pat):
+            return True
+        if fnmatch.fnmatch(normalized, f"*{pat}*"):
+            return True
+    return False
+
+
+def get_files_fallback(root: Path) -> list[Path]:
+    """Фоллбэк-сканер директорий, если git отсутствует."""
+    patterns = parse_gitignore(root)
+    collected = []
+
+    for curr_root, dirs, files in os.walk(root):
+        rel_dir = os.path.relpath(curr_root, root)
+        
+        # Срезаем игнорируемые директории на лету
+        dirs[:] = [
+            d for d in dirs 
+            if not is_ignored_fallback(
+                os.path.normpath(os.path.join(rel_dir, d)), patterns
+            )
+        ]
+
+        for file in files:
+            if file == OUTPUT_FILE:
+                continue
+            full_path = Path(curr_root) / file
+            rel_file = os.path.relpath(full_path, root)
+            if not is_ignored_fallback(rel_file, patterns):
+                collected.append(full_path)
+
+    return collected
+
+
+def main():
+    root = Path.cwd()
+    print(f"[*] Сканируем репозиторий: {root}")
+
+    # 1. Пробуем получить файлы через git
+    files = get_files_via_git(root)
+    if files is not None:
+        print(f"[+] Git обнаружен. Найдено кандидатов: {len(files)}")
+    else:
+        print("[!] Git недоступен или это не репо. Работает fallback-сканер...")
+        files = get_files_fallback(root)
+        print(f"[+] Найдено кандидатов: {len(files)}")
+
+    # 2. Фильтруем бинарники и собираем дамп
+    out_path = root / OUTPUT_FILE
+    written_count = 0
+    skipped_binaries = 0
+
+    with open(out_path, "w", encoding="utf-8", errors="replace") as out:
+        for file_path in sorted(files):
+            rel_path = file_path.relative_to(root).as_posix()
+
+            if is_binary_content(file_path):
+                skipped_binaries += 1
+                continue
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                print(f"[!] Ошибка чтения {rel_path}: {e}")
+                continue
+
+            header = f"\n{'=' * 80}\nFILE: {rel_path}\n{'=' * 80}\n"
+            out.write(header)
+            out.write(content)
+            if not content.endswith("\n"):
+                out.write("\n")
+
+            written_count += 1
+
+    print("\n" + "=" * 40)
+    print(f"[✓] Готово! Результат сохранён в: {OUTPUT_FILE}")
+    print(f"    - Текстовых файлов экспортировано: {written_count}")
+    print(f"    - Бинарников пропущено: {skipped_binaries}")
+    print("=" * 40)
+
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+FILE: gradle.properties
+================================================================================
+org.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+
+================================================================================
+FILE: settings.gradle.kts
+================================================================================
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "tbr-widget"
+include(":app")
