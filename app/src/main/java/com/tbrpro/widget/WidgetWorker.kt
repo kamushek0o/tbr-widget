@@ -3,6 +3,7 @@ package com.tbrpro.widget
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
@@ -29,6 +30,7 @@ class WidgetWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params)
 
     companion object {
         private const val PERIODIC_NAME = "tbr_widget_periodic"
+        private const val ONETIME_NAME = "tbr_widget_refresh_now"
 
         fun schedulePeriodic(ctx: Context, intervalMin: Long) {
             val constraints = Constraints.Builder()
@@ -46,8 +48,17 @@ class WidgetWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params)
         }
 
         fun runNow(ctx: Context) {
-            val req = OneTimeWorkRequestBuilder<WidgetWorker>().build()
-            WorkManager.getInstance(ctx).enqueue(req)
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val req = OneTimeWorkRequestBuilder<WidgetWorker>()
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniqueWork(
+                ONETIME_NAME,
+                ExistingWorkPolicy.REPLACE,
+                req
+            )
         }
     }
 }

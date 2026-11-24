@@ -51,6 +51,19 @@ object AppUpdater {
         return r.third > l.third
     }
 
+    private fun sha256Hex(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(16384)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     fun checkLatestRelease(ctx: Context): Result<UpdateReleaseInfo> {
         val curVer = getCurrentVersion(ctx)
         return try {
@@ -71,18 +84,35 @@ object AppUpdater {
             val assets = rel.optJSONArray("assets")
             var apkUrl = ""
             var sha256 = ""
+            var shaUrl = ""
             if (assets != null) {
                 for (i in 0 until assets.length()) {
                     val a = assets.optJSONObject(i) ?: continue
                     val nm = a.optString("name", "").lowercase()
-                    if (nm.endsWith(".apk")) {
+                    if (nm.endsWith(".apk") && apkUrl.isBlank()) {
                         apkUrl = a.optString("browser_download_url", "")
                         val digest = a.optString("digest", "")
                         if (digest.startsWith("sha256:", ignoreCase = true)) {
                             sha256 = digest.substringAfter(":").trim().lowercase()
                         }
-                        break
+                    } else if (nm.endsWith(".sha256") && shaUrl.isBlank()) {
+                        shaUrl = a.optString("browser_download_url", "")
                     }
+                }
+            }
+
+            if (sha256.isBlank() && shaUrl.isNotBlank()) {
+                try {
+                    val sConn = (URL(shaUrl).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 5000; readTimeout = 5000
+                        setRequestProperty("User-Agent", "tbr-widget/$curVer")
+                    }
+                    if (sConn.responseCode in 200..299) {
+                        val tok = sConn.inputStream.bufferedReader().use { it.readText() }.trim().split(Regex("""\s+""")).firstOrNull()?.lowercase().orEmpty()
+                        if (tok.length == 64 && tok.all { it in '0'..'9' || it in 'a'..'f' }) sha256 = tok
+                    }
+                    sConn.disconnect()
+                } catch (_: Exception) {
                 }
             }
 
@@ -106,40 +136,46 @@ object AppUpdater {
             return Result.failure(IllegalStateException("APK файл не найден в релизе"))
         }
         val updatesDir = File(ctx.filesDir, "updates").apply { mkdirs() }
-        val apkFile = File(updatesDir, "tbr-widget-update.apk")
+        val apkFile = File(updatesDir, "tbr-widget-v${info.latestVersion}.apk")
         return try {
-            val conn = (URL(info.apkUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 15000
-                readTimeout = 30000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "tbr-widget/${info.currentVersion}")
-            }
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                conn.disconnect()
-                throw IllegalStateException("Ошибка скачивания HTTP $code")
-            }
+            val cachedValid = apkFile.exists() && apkFile.length() > 100_000L &&
+                (info.sha256.isBlank() || sha256Hex(apkFile).equals(info.sha256, ignoreCase = true))
 
-            val digest = MessageDigest.getInstance("SHA-256")
-            conn.inputStream.use { input ->
-                apkFile.outputStream().use { out ->
-                    val buf = ByteArray(16384)
-                    while (true) {
-                        val read = input.read(buf)
-                        if (read <= 0) break
-                        out.write(buf, 0, read)
-                        digest.update(buf, 0, read)
+            if (!cachedValid) {
+                updatesDir.listFiles()?.forEach { if (it.name.endsWith(".apk")) it.delete() }
+                val conn = (URL(info.apkUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "tbr-widget/${info.currentVersion}")
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    conn.disconnect()
+                    throw IllegalStateException("Ошибка скачивания HTTP $code")
+                }
+
+                val digest = MessageDigest.getInstance("SHA-256")
+                conn.inputStream.use { input ->
+                    apkFile.outputStream().use { out ->
+                        val buf = ByteArray(16384)
+                        while (true) {
+                            val read = input.read(buf)
+                            if (read <= 0) break
+                            out.write(buf, 0, read)
+                            digest.update(buf, 0, read)
+                        }
                     }
                 }
-            }
-            conn.disconnect()
+                conn.disconnect()
 
-            if (info.sha256.isNotBlank()) {
-                val actualHex = digest.digest().joinToString("") { "%02x".format(it) }
-                if (!actualHex.equals(info.sha256, ignoreCase = true)) {
-                    apkFile.delete()
-                    throw IllegalStateException("SHA-256 не совпал! Файл удалён.")
+                if (info.sha256.isNotBlank()) {
+                    val actualHex = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actualHex.equals(info.sha256, ignoreCase = true)) {
+                        apkFile.delete()
+                        throw IllegalStateException("SHA-256 не совпал! Файл удалён.")
+                    }
                 }
             }
 

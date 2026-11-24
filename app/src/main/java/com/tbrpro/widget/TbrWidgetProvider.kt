@@ -66,8 +66,8 @@ class TbrWidgetProvider : AppWidgetProvider() {
                 val opts = mgr.getAppWidgetOptions(widgetId)
                 val minWdp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 250).coerceAtLeast(180)
                 val minHdp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 130).coerceAtLeast(100)
-                val targetWpx = ((minWdp - 20) * density).toInt().coerceIn(240, 540)
-                val chartAreaHpx = ((minHdp - 70) * density).toInt().coerceIn(80, 500)
+                val targetWpx = ((minWdp - 16) * density).toInt().coerceIn(320, 960)
+                val chartAreaHpx = ((minHdp - 68) * density).toInt().coerceIn(140, 640)
 
                 if (data != null) {
                     views.setTextViewText(R.id.tv_qb_badge, if (data.qbRunning) "● qB OK" else "● qB OFF")
@@ -96,10 +96,11 @@ class TbrWidgetProvider : AppWidgetProvider() {
                             views.setViewVisibility(R.id.iv_chart_3, View.GONE)
                         }
                         else -> {
-                            val slotH = (chartAreaHpx / 3).coerceIn(80, 160)
-                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, targetWpx, slotH))
-                            views.setImageViewBitmap(R.id.iv_chart_2, WidgetChartRenderer.renderDaily(data.dailySeries, targetWpx, slotH))
-                            views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, targetWpx, slotH, data.topPeriod, data.topScale))
+                            val slotW = targetWpx.coerceAtMost(720)
+                            val slotH = (chartAreaHpx / 3).coerceIn(120, 210)
+                            views.setImageViewBitmap(R.id.iv_chart_1, WidgetChartRenderer.renderSpeed(data.speedSeries, slotW, slotH))
+                            views.setImageViewBitmap(R.id.iv_chart_2, WidgetChartRenderer.renderDaily(data.dailySeries, slotW, slotH))
+                            views.setImageViewBitmap(R.id.iv_chart_3, WidgetChartRenderer.renderTop(data.topSeries, slotW, slotH, data.topPeriod, data.topScale))
                             views.setViewVisibility(R.id.iv_chart_1, View.VISIBLE)
                             views.setViewVisibility(R.id.iv_chart_2, View.VISIBLE)
                             views.setViewVisibility(R.id.iv_chart_3, View.VISIBLE)
